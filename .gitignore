@@ -1,0 +1,19 @@
+# Datasets
+dataset/
+datasets/
+
+# Documents (excluded for now)
+documents/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
