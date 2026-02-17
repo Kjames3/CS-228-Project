@@ -52,7 +52,7 @@ def run_training_step(model_info):
     print(f"{'='*60}\n")
     
     cmd = [
-        sys.executable, "project/train.py",
+        sys.executable, "project/train_fixed.py",
         "--model", model_file,
         "--name", student_name,
         "--epochs", str(EPOCHS),
