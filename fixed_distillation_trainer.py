@@ -84,8 +84,20 @@ class FixedDistillationTrainer:
         
     def _init_dataloader(self):
         """Initialize dataloader using Ultralytics utilities"""
-        self.dataloader = build_dataloader(self.data_cfg, batch=self.batch_size, workers=0)
-
+        from ultralytics.data.utils import check_det_dataset
+        from ultralytics.data.dataset import YOLODataset
+        from ultralytics.data import build_dataloader
+        
+        dataset_info = check_det_dataset(self.data_cfg)
+        dataset = YOLODataset(
+            dataset_info['train'], 
+            imgsz=640, 
+            batch_size=self.batch_size, 
+            augment=True, 
+            data=dataset_info, 
+            classes=dataset_info['names']
+        )
+        self.dataloader = build_dataloader(dataset, batch=self.batch_size, workers=0)
     def _setup_feature_extraction(self):
         self.feature_layer_idx = self._find_feature_layer()
         print(f"Feature extraction layer index: {self.feature_layer_idx}")
@@ -142,41 +154,38 @@ class FixedDistillationTrainer:
             num_batches = 0
             
             for batch_idx, batch in enumerate(self.dataloader):
-                # Simple batch prep - in real Ultralytics this is more complex
-                # We assume batch is already formatted by build_dataloader
+                # Move batch to device for v8DetectionLoss
+                batch = {k: v.to(self.device).float() if isinstance(v, torch.Tensor) and v.dtype == torch.float64 else v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
                 
                 self.teacher_features = []
                 self.student_features = []
                 
                 # Forward pass
                 with torch.no_grad():
-                    _ = self.teacher_model(batch['img'].to(self.device).float() / 255.0)
+                    _ = self.teacher_model(batch['img'].float() / 255.0)
                 teacher_feat = self.teacher_features[0]
                 
                 # Student forward (with blur if implemented)
-                preds = self.student_model(batch['img'].to(self.device).float() / 255.0)
+                preds = self.student_model(batch['img'].float() / 255.0)
                 student_feat = self.student_features[0]
                 
-                # Losses
-                if isinstance(preds, (list, tuple)):
-                    preds = preds[0]
-                    
-                # NOTE: v8DetectionLoss needs specific target formatting
-                # For this skeletal implementation we skip the complex target formatting 
-                # effectively assuming the user will plug in the _compute_detection_loss from the plan
+                # Compute detection loss
+                det_loss, loss_items = self.criterion(preds, batch)
                 
+                # Compute distillation loss
                 distill_loss = self.distill_loss_fn(student_feat, teacher_feat)
                 
                 # Total loss
-                loss = distill_loss # + det_loss (once implemented fully)
+                loss = distill_loss + det_loss
                 
                 self.optimizer.zero_grad()
                 loss.backward()
                 self.optimizer.step()
                 
                 epoch_distill_loss += distill_loss.item()
+                epoch_det_loss += det_loss.item()
                 num_batches += 1
             
-            print(f"Epoch {epoch+1}/{self.epochs} | Distill Loss: {epoch_distill_loss/num_batches:.4f}")
+            print(f"Epoch {epoch+1}/{self.epochs} | Det Loss: {epoch_det_loss/num_batches:.4f} | Distill Loss: {epoch_distill_loss/num_batches:.4f}")
             self.scheduler.step()
 
