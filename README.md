@@ -29,3 +29,25 @@ We have implemented a custom Distillation Trainer in PyTorch that extends the st
 *   **Training Data:** 2017 COCO train/val annotation dataset, augmented with synthetic blur.
 *   **Test Data:** A "Golden Test Set" of 600 real-world blurry images captured from the moving robot.
 *   **Metrics:** mAP@50 (Accuracy) and Inference Latency (ms) on Raspberry Pi 5 / Jetson Orin Nano.
+
+## 4. How to Run
+
+### Requirements
+Ensure you have the necessary dependencies installed:
+```bash
+pip install torch ultralytics opencv-python numpy pyyaml
+```
+
+### Step 1: Train Teacher Models
+First, train the standard "teacher" models (YOLOv8n, YOLOv11n, YOLOv26n) on the clean, sharp datasets.
+```bash
+python training/train_teachers.py --epochs 150 --batch 16
+```
+This script automatically combines the COCO and Custom Cans datasets and saves the output models to the `models/teachers/` directory.
+
+### Step 2: Run Distillation Training
+Once the teacher models are ready, run the batch distillation training. This applies the batched GPU blur augmentation and the Spatial Attention Transfer distillation loss to train the student models.
+```bash
+python batch_train.py
+```
+This script sequentially trains the student models, evaluates their performance (mAP@50) on the Golden Test Set, and logs average inference latency metrics.
