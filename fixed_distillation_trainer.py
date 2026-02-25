@@ -9,26 +9,41 @@ import copy
 from torch.utils.data import DataLoader
 from ultralytics.data import build_dataloader, build_yolo_dataset
 
-class ChoEtAlFeatureLoss(nn.Module):
+class SpatialAttentionLoss(nn.Module):
     """
-    Feature-Level De-blurring via Self-Guided Knowledge Distillation
-    Based on: Cho et al., IEEE Access 2022
+    Feature-Level De-blurring via Spatial Attention Transfer
+    Computes spatial attention map sum(|F_c|^2) across channels and applies MSE loss with temperature scaling.
     """
-    def __init__(self, temperature=4.0, normalize=True):
+    def __init__(self, normalize=True):
         super().__init__()
-        self.T = temperature
         self.normalize = normalize
         
-    def forward(self, student_feat, teacher_feat):
+    def forward(self, student_feat, teacher_feat, temperature=4.0):
         if student_feat.shape != teacher_feat.shape:
             target_size = student_feat.shape[2:]
             teacher_feat = F.adaptive_avg_pool2d(teacher_feat, target_size)
         
-        if self.normalize:
-            student_feat = F.normalize(student_feat, p=2, dim=1)
-            teacher_feat = F.normalize(teacher_feat, p=2, dim=1)
+        # Compute spatial attention map: sum of squared activations across channel dim
+        student_attention = torch.sum(student_feat.pow(2), dim=1, keepdim=True)
+        teacher_attention = torch.sum(teacher_feat.pow(2), dim=1, keepdim=True)
         
-        return F.mse_loss(student_feat, teacher_feat.detach())
+        # Apply temperature scaling
+        student_attention = student_attention / temperature
+        teacher_attention = teacher_attention / temperature
+        
+        if self.normalize:
+            # Flatten spatial dims to normalize attention map
+            B, C, H, W = student_attention.shape
+            s_flat = student_attention.view(B, -1)
+            t_flat = teacher_attention.view(B, -1)
+            
+            s_flat = F.normalize(s_flat, p=2, dim=1)
+            t_flat = F.normalize(t_flat, p=2, dim=1)
+            
+            student_attention = s_flat.view(B, C, H, W)
+            teacher_attention = t_flat.view(B, C, H, W)
+            
+        return F.mse_loss(student_attention, teacher_attention.detach())
 
 class FixedDistillationTrainer:
     def __init__(self, model_name='yolov8n.pt', data_cfg='coco8.yaml', 
@@ -53,8 +68,12 @@ class FixedDistillationTrainer:
         # Initialize models
         self._init_models(model_name)
         
-        # Loss functions - Issue C Fix
-        self.distill_loss_fn = ChoEtAlFeatureLoss(temperature=4.0)
+        # Loss functions - Issue C Fix (Spatial Attention Transfer)
+        self.distill_loss_fn = SpatialAttentionLoss(normalize=True)
+        
+        # Blur augmentation
+        from blur_augment import BatchedBlurAugment
+        self.blur_augment = BatchedBlurAugment(blur_prob=0.8, device=self.device)
         
         # Optimizer
         self.optimizer = optim.AdamW(self.student_model.parameters(), lr=lr, weight_decay=0.001)
@@ -139,10 +158,8 @@ class FixedDistillationTrainer:
         self.criterion = v8DetectionLoss(self.student_model)
 
     def _apply_blur(self, images):
-        """Placeholder for blur augmentation - reusing original logic if available, else identity"""
-        # In a real implementation this would call blur_augment.py
-        # For this fix, we assume the user has the blur_augment module or we implement a simple version
-        return images 
+        """Batched GPU blur augmentation"""
+        return self.blur_augment(images)
 
     def train(self):
         print(colorstr("blue", "bold", "Starting Fixed Distillation Training..."))
@@ -165,15 +182,20 @@ class FixedDistillationTrainer:
                     _ = self.teacher_model(batch['img'].float() / 255.0)
                 teacher_feat = self.teacher_features[0]
                 
-                # Student forward (with blur if implemented)
-                preds = self.student_model(batch['img'].float() / 255.0)
+                # Student forward (with blur)
+                blurred_images = self._apply_blur(batch['img'].float() / 255.0)
+                preds = self.student_model(blurred_images)
                 student_feat = self.student_features[0]
                 
                 # Compute detection loss
                 det_loss, loss_items = self.criterion(preds, batch)
                 
+                # Dynamic Temperature Scaling: decrease temperature as epochs progress
+                # Starts at 4.0, ends at 1.0
+                current_temp = 4.0 - 3.0 * (epoch / max(1, self.epochs - 1))
+                
                 # Compute distillation loss
-                distill_loss = self.distill_loss_fn(student_feat, teacher_feat)
+                distill_loss = self.distill_loss_fn(student_feat, teacher_feat, temperature=current_temp)
                 
                 # Total loss
                 loss = distill_loss + det_loss
