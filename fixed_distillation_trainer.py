@@ -121,17 +121,17 @@ class FixedDistillationTrainer:
         self.feature_layer_idx = self._find_feature_layer()
         print(f"Feature extraction layer index: {self.feature_layer_idx}")
         
-        self.teacher_features = []
-        self.student_features = []
+        self.feature_storage = {'teacher': None, 'student': None}
         
-        def make_hook(storage):
+        def make_hook(key):
             def hook(module, input, output):
                 # Issue B Fix: Handle Tuple Outputs
                 if isinstance(output, tuple):
                     feat = output[0]
                 else:
                     feat = output
-                storage.append(feat)
+                # Fix: Memory leak prevention by overriding instead of appending
+                self.feature_storage[key] = feat
             return hook
         
         t_children = list(self.teacher_model.model.children())
@@ -140,17 +140,33 @@ class FixedDistillationTrainer:
         t_layer = t_children[self.feature_layer_idx]
         s_layer = s_children[self.feature_layer_idx]
         
-        t_layer.register_forward_hook(make_hook(self.teacher_features))
-        s_layer.register_forward_hook(make_hook(self.student_features))
+        t_layer.register_forward_hook(make_hook('teacher'))
+        s_layer.register_forward_hook(make_hook('student'))
 
     def _find_feature_layer(self):
-        for i, module in enumerate(self.teacher_model.model.children()):
-            if 'SPPF' in type(module).__name__ or 'SPP' in type(module).__name__:
-                return i
-        for i, module in enumerate(self.teacher_model.model.children()):
-            if 'Upsample' in type(module).__name__ or 'Concat' in type(module).__name__:
+        """
+        Dynamically locate a suitable feature extraction layer by checking module signatures.
+        Prefers Spatial Pyramid Pooling (SPP) variants which typically reside near the end 
+        of the backbone before the path aggregation neck.
+        """
+        children = list(self.teacher_model.model.children())
+        
+        # Look for SPPF or SPP functionally rather than just name
+        for i, module in enumerate(children):
+            if hasattr(module, 'cv1') and hasattr(module, 'cv2') and hasattr(module, 'm'):
+                # Many SPP/SPPF modules have internal maxpool ('m') and conv ('cv1', 'cv2')
+                name = type(module).__name__
+                if 'SPP' in name:
+                    return i
+                    
+        # Fallback: Find the transition point between downsampling (stride 2) and upsampling
+        for i, module in enumerate(children):
+            name = type(module).__name__
+            if 'Upsample' in name or 'Concat' in name:
                 return max(0, i - 1)
-        return len(list(self.teacher_model.model.children())) // 2
+                
+        # Last resort fallback
+        return len(children) // 2
 
     def _setup_detection_loss(self):
         from ultralytics.utils.loss import v8DetectionLoss
@@ -174,18 +190,18 @@ class FixedDistillationTrainer:
                 # Move batch to device for v8DetectionLoss
                 batch = {k: v.to(self.device).float() if isinstance(v, torch.Tensor) and v.dtype == torch.float64 else v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
                 
-                self.teacher_features = []
-                self.student_features = []
+                self.feature_storage['teacher'] = None
+                self.feature_storage['student'] = None
                 
                 # Forward pass
                 with torch.no_grad():
                     _ = self.teacher_model(batch['img'].float() / 255.0)
-                teacher_feat = self.teacher_features[0]
+                teacher_feat = self.feature_storage['teacher']
                 
                 # Student forward (with blur)
                 blurred_images = self._apply_blur(batch['img'].float() / 255.0)
                 preds = self.student_model(blurred_images)
-                student_feat = self.student_features[0]
+                student_feat = self.feature_storage['student']
                 
                 # Compute detection loss
                 det_loss, loss_items = self.criterion(preds, batch)
