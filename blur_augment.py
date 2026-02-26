@@ -110,32 +110,67 @@ class BatchedBlurAugment:
     def __call__(self, images_tensor):
         """
         images_tensor: (B, C, H, W) on self.device
+        Applies a batched GPU-accelerated convolution without Python loops.
         """
         import torch
         import torch.nn.functional as F
         B, C, H, W = images_tensor.shape
         blurred_images = images_tensor.clone()
         
-        for i in range(B):
-            if random.random() > self.blur_prob:
-                continue
-                
+        # Determine which images get blurred
+        blur_mask = torch.rand(B, device=self.device) < self.blur_prob
+        
+        if not blur_mask.any():
+            return blurred_images
+            
+        # We will build a batch of specific kernels for each image that needs blurring
+        num_to_blur = blur_mask.sum().item()
+        blur_indices = blur_mask.nonzero(as_tuple=True)[0]
+        
+        # Default kernel size for padding logic across the batch
+        # To batch conv2d with different kernels, they must be the same spatial size.
+        # We will pad smaller kernels to max_kernel size.
+        max_k = self.max_kernel
+        if max_k % 2 == 0: max_k += 1
+        
+        # Create a batched kernel tensor: [num_to_blur * C, 1, max_k, max_k]
+        kernels = torch.zeros(num_to_blur * C, 1, max_k, max_k, device=self.device)
+        
+        for idx in range(num_to_blur):
             kernel_size = random.randint(self.min_kernel, self.max_kernel)
             if kernel_size % 2 == 0: kernel_size += 1
-                
+            
             if random.random() < 0.6:
                 angle = random.randint(0, 360)
-                kernel = self._get_motion_blur_kernel(kernel_size, angle).to(self.device)
+                k = self._get_motion_blur_kernel(kernel_size, angle).to(self.device)
             else:
-                kernel = self._get_gaussian_blur_kernel(kernel_size).to(self.device)
-                
-            kernel = kernel.unsqueeze(0).unsqueeze(0).expand(C, 1, kernel_size, kernel_size)
-            padding = kernel_size // 2
+                k = self._get_gaussian_blur_kernel(kernel_size).to(self.device)
             
-            # Apply to single image i
-            img = images_tensor[i:i+1] # (1, C, H, W)
-            blurred = F.conv2d(img, kernel, padding=padding, groups=C)
-            blurred_images[i] = blurred.squeeze(0)
+            # Pad kernel to max_k
+            pad_size = (max_k - kernel_size) // 2
+            if pad_size > 0:
+                k = F.pad(k, (pad_size, pad_size, pad_size, pad_size), mode='constant', value=0)
+            
+            # Broadcast to C channels 
+            # k is [max_k, max_k], we need it to be copied C times in the batch dimension
+            for c in range(C):
+                kernels[idx * C + c, 0] = k
+                
+        # Get the images to blur: [num_to_blur, C, H, W]
+        imgs_to_blur = images_tensor[blur_indices]
+        
+        # Reshape for grouped convolution: [1, num_to_blur * C, H, W]
+        imgs_reshaped = imgs_to_blur.view(1, num_to_blur * C, H, W)
+        
+        # Apply grouped convolution
+        padding = max_k // 2
+        blurred_reshaped = F.conv2d(imgs_reshaped, kernels, padding=padding, groups=num_to_blur * C)
+        
+        # Reshape back to [num_to_blur, C, H, W]
+        blurred_out = blurred_reshaped.view(num_to_blur, C, H, W)
+        
+        # Put back into the batch
+        blurred_images[blur_indices] = blurred_out
             
         return blurred_images
 

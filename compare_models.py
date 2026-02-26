@@ -61,11 +61,17 @@ def benchmark_model(model_path, data_yaml, device='cpu', apply_blur=False):
     for _ in range(10):
         _ = model(dummy_input, verbose=False)
         
-    # Timing
-    start_time = time.time()
+    if device == 'cuda' or (isinstance(device, torch.device) and device.type == 'cuda'):
+        torch.cuda.synchronize()
+        
+    start_time = time.perf_counter()
     for _ in range(50):
         _ = model(dummy_input, verbose=False)
-    end_time = time.time()
+        
+    if device == 'cuda' or (isinstance(device, torch.device) and device.type == 'cuda'):
+        torch.cuda.synchronize()
+        
+    end_time = time.perf_counter()
     latency_ms = ((end_time - start_time) / 50) * 1000
 
     # Validation Arguments
@@ -93,18 +99,22 @@ def benchmark_model(model_path, data_yaml, device='cpu', apply_blur=False):
     
     model_name_clean = Path(model_path).stem
     
-    # Improve readability
+    # Improve readability dynamically instead of hardcoded strings
+    import re
     if "student" in model_name_clean:
-         # e.g. student_yolov8n_cans_best -> Student v8 (Best)
-         if "yolov8" in model_name_clean:
-             model_name_clean = "Student v8 (Best)"
-         elif "yolo11" in model_name_clean:
-             model_name_clean = "Student v11 (Best)"
-         elif "yolo26" in model_name_clean:
-             model_name_clean = "Student v26 (Best)"
+         # Match pattern student_yolovXn_... -> Student vX (Best)
+         match = re.search(r'yolo[v]?(\d+)', model_name_clean.lower())
+         if match:
+             model_name_clean = f"Student v{match.group(1)} (Best)"
+         else:
+             model_name_clean = "Student (Best)"
     elif "cans" in model_name_clean:
-         # e.g. yolov8n_cans -> Teacher v8 (Distilled) or just v8 (Fine-tuned)
-         model_name_clean = model_name_clean.replace("yolov8n", "v8").replace("yolo11n", "v11").replace("yolo26n", "v26").replace("_cans", " (Cans)")
+         # Match pattern yolo[v]Xn_cans -> vX (Cans)
+         match = re.search(r'yolo[v]?(\d+)', model_name_clean.lower())
+         if match:
+             model_name_clean = f"v{match.group(1)} (Cans)"
+         else:
+             model_name_clean = "Teacher (Cans)"
 
     metrics = {
         'Model': model_name_clean,
@@ -141,11 +151,16 @@ def create_blurred_dataset(clean_yaml_path, output_dir_name="combined_cans_blurr
     else:
          base_path = Path(clean_yaml_path).parent.resolve()
 
-    test_images_path = base_path / data.get('test', 'test/images')
+    # Determine the test images path
+    rel_test = data.get('test', 'test/images')
+    test_images_path = base_path / rel_test
+    
+    if not test_images_path.exists() and (base_path / "test" / "images").exists():
+        test_images_path = base_path / "test" / "images"
     
     if not test_images_path.exists():
-        # Fallback for combined_cans structure
-        test_images_path = base_path / "test" / "images"
+        print(f"Error: test dataset not found at {test_images_path}. Skipping blur dataset generation.")
+        return None
 
     print(f"Generating Blurred Dataset from: {test_images_path}")
     
@@ -226,8 +241,14 @@ def generate_report(df, output_path):
         )
         fig_bar.update_traces(texttemplate='%{text:.3f}', textposition='outside')
         
-        # Create HTML
-        with open(output_path, 'w', encoding='utf-8') as f:
+        # Sanitize path to prevent writes outside project directory
+        out_p = Path(output_path).resolve()
+        proj_dir = Path("project").resolve()
+        if proj_dir not in out_p.parents:
+            print(f"Warning: Output path {output_path} is outside project directory. Redirecting to project/.")
+            out_p = proj_dir / out_p.name
+            
+        with open(out_p, 'w', encoding='utf-8') as f:
             f.write("<html><head><title>Model Comparison Dashboard</title></head><body>")
             f.write("<h1>🚀 Model Comparison Dashboard</h1>")
             f.write(fig_scatter.to_html(full_html=False, include_plotlyjs='cdn'))
@@ -236,7 +257,7 @@ def generate_report(df, output_path):
             f.write(df.to_html(index=False, classes='data-table'))
             f.write("</body></html>")
             
-        print(f"✅ Dashboard saved to: {output_path}")
+        print(f"✅ Dashboard saved to: {out_p}")
         return True
         
     except ImportError:
@@ -294,9 +315,15 @@ def main():
         # 2. Setup Data
         print("Step 1: Preparing Datasets...", flush=True)
         clean_yaml = args.data
+        print(f"Note: Blur dataset generation currently writes duplicated blurred images to disk via create_blurred_dataset().")
+        print(f"      This disk I/O occurs offline prior to evaluation and does not impact model latency benchmarks.")
         blurred_yaml = create_blurred_dataset(clean_yaml)
         
         results_list = []
+        
+        if not blurred_yaml:
+            print("Failed to generate blurred dataset. Cannot run benchmarks.")
+            return
 
         # 3. Benchmark Loop
         print("\nStep 2: Running Benchmarks...", flush=True)

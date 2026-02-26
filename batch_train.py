@@ -1,7 +1,8 @@
-import subprocess
 import time
 import sys
 import os
+import traceback
+from fixed_distillation_trainer import FixedDistillationTrainer
 
 # Define the models to train
 # We prioritize using the 'cans' specific models if they exist, otherwise fallback to standard.
@@ -37,9 +38,10 @@ def run_training_step(model_info):
     # Check if file exists, else use fallback
     if not os.path.exists(model_file):
         print(f"Warning: {model_file} not found. Checking fallback {model_info.get('fallback')}...")
-        if model_info.get("fallback") and (os.path.exists(model_info["fallback"]) or "models/" not in model_info["fallback"]):
+        fallback = model_info.get("fallback")
+        if fallback and (os.path.exists(fallback) or not fallback.startswith("models/")):
              # Fallback exists OR it's a standard ultralytics name (like yolov8n.pt) which auto-downloads
-             model_file = model_info["fallback"]
+             model_file = fallback
         else:
              print(f"Error: No valid model file found for {model_name}. Skipping.")
              return False
@@ -51,26 +53,27 @@ def run_training_step(model_info):
     print(f"Output Name: {student_name}")
     print(f"{'='*60}\n")
     
-    cmd = [
-        sys.executable, "project/train_fixed.py",
-        "--model", model_file,
-        "--name", student_name,
-        "--epochs", str(EPOCHS),
-        "--batch", str(BATCH_SIZE),
-        "--data", DATA_CONFIG
-    ]
-
-    # Force dataset rebuild for the first model to ensure 'combined_cans' 
-    # definitely contains all source data (can1-5, custom).
-    if model_info.get("force_rebuild", False):
-        cmd.append("--rebuild-dataset")
-    
     start_t = time.time()
-    result = subprocess.run(cmd)
+    try:
+        # Initialize and run via Python instead of subprocess to avoid command injection
+        trainer = FixedDistillationTrainer(
+            model_name=model_file,
+            data_cfg=DATA_CONFIG,
+            epochs=EPOCHS,
+            batch_size=BATCH_SIZE,
+            run_name=student_name
+        )
+        trainer.train()
+        success = True
+    except Exception as e:
+        print(f"\n❌ {model_name} training failed with exception:")
+        traceback.print_exc()
+        success = False
+        
     end_t = time.time()
     
     duration = (end_t - start_t) / 60
-    if result.returncode == 0:
+    if success:
         print(f"\n✅ {model_name} training completed successfully in {duration:.1f} minutes.")
         best_model_path = f"project/{student_name}_best.pt"
         print(f"   Best model saved to: {best_model_path}")
@@ -115,11 +118,11 @@ def run_training_step(model_info):
             print(f"✅ {student_name} Average Inference Latency: {avg_latency_ms:.2f} ms")
             
         except Exception as e:
-            print(f"⚠ Evaluation failed for {student_name}: {e}")
+            print(f"⚠ Evaluation failed for {student_name}:")
+            traceback.print_exc()
             
         return True
     else:
-        print(f"\n❌ {model_name} training failed.")
         return False
 
 def main():
