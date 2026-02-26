@@ -46,11 +46,42 @@ def prepare_combined_dataset(project_root: Path, force_rebuild: bool = False, in
     # If using COCO (80 classes, 0-79), cans should be class 80
     target_class_id = 80 if include_coco else 0
     
+    # Check if COCO is requested and available
+    if include_coco:
+        from ultralytics import settings
+        datasets_dir = Path(settings['datasets_dir'])
+        coco_dir_v1 = datasets_dir / "coco"
+        coco_dir_v2 = datasets_dir / "coco2017" # Sometimes downloaded as coco2017
+        
+        # Check standard locations
+        coco_exists = (coco_dir_v1 / "train2017.txt").exists() or \
+                      (coco_dir_v2 / "train2017.txt").exists() or \
+                      (coco_dir_v1 / "images" / "train2017").exists()
+                      
+        if not coco_exists:
+            print(f"\n{'!'*60}")
+            print("WARNING: COCO dataset not found in:")
+            print(f"  - {coco_dir_v1}")
+            print(f"  - {coco_dir_v2}")
+            print("Teacher training will proceed with CANS ONLY (1 class).")
+            print("To train with COCO, please download it first or use a 'coco.yaml' run.")
+            print(f"{'!'*60}\n")
+            include_coco = False
+            target_class_id = 0 # Revert to class 0
+            
     # Check if already prepared (and check if config matches desired mode)
     yaml_path = combined_dir / "data.yaml"
     if combined_dir.exists() and yaml_path.exists() and not force_rebuild:
-        print(f"✓ Combined dataset already exists at {combined_dir}")
-        return combined_dir
+        # Check if the previous build matched our current COCO status
+        with open(yaml_path, 'r') as f:
+            prev_config = yaml.safe_load(f)
+            prev_nc = prev_config.get('nc', 1)
+            target_nc = 81 if include_coco else 1
+            if prev_nc == target_nc:
+                print(f"✓ Combined dataset already exists at {combined_dir}")
+                return combined_dir
+            else:
+                print(f"Dataset config mismatch (found {prev_nc} classes, need {target_nc}). Rebuilding...")
     
     # Clean up if rebuilding
     if combined_dir.exists():
@@ -188,29 +219,8 @@ def prepare_combined_dataset(project_root: Path, force_rebuild: bool = False, in
                 
                 print(f"    ✓ {split}: {len(files)} images (auto-split)")
     
-    # Check if COCO is requested and available
-    if include_coco:
-        from ultralytics import settings
-        datasets_dir = Path(settings['datasets_dir'])
-        coco_dir_v1 = datasets_dir / "coco"
-        coco_dir_v2 = datasets_dir / "coco2017" # Sometimes downloaded as coco2017
-        
-        # Check standard locations
-        coco_exists = (coco_dir_v1 / "train2017.txt").exists() or \
-                      (coco_dir_v2 / "train2017.txt").exists() or \
-                      (coco_dir_v1 / "images" / "train2017").exists()
-                      
-        if not coco_exists:
-            print(f"\n{'!'*60}")
-            print("WARNING: COCO dataset not found in:")
-            print(f"  - {coco_dir_v1}")
-            print(f"  - {coco_dir_v2}")
-            print("Teacher training will proceed with CANS ONLY (1 class).")
-            print("To train with COCO, please download it first or use a 'coco.yaml' run.")
-            print(f"{'!'*60}\n")
-            include_coco = False
-            target_class_id = 0 # Revert to class 0
-            
+    # Delete the late COCO check that was here
+    
     # Create data.yaml configuration
     if include_coco:
         # Standard COCO classes (80)
