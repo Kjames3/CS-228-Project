@@ -51,3 +51,10 @@ Once the teacher models are ready, run the batch distillation training. This app
 python batch_train.py
 ```
 This script sequentially trains the student models, evaluates their performance (mAP@50) on the Golden Test Set, and logs average inference latency metrics.
+
+### Step 3: Fast Training via Google Colab (Optional but Recommended)
+If local laptop GPUs (e.g. RTX 4060 8GB) are bottlenecking your training speed due to batch-size limits, you can easily migrate the pipeline to Google Colab to access up to 80GB VRAM (H100/A100) and dramatically increase `--batch 128` throughput:
+
+1. **Prepare Datasets**: Run `python prep_colab_upload.py` to securely package your local `Cans` datasets without copying the massive 19GB COCO dataset.
+2. **Move to Cloud**: Create a folder named `CS-228-Project` in Google Drive. Upload `custom_datasets_only.zip` and all python scripts (`training/`, `project/`, `*.py`) to this folder.
+3. **Execute**: Open `Colab_Training_Pipeline.ipynb` using Google Colaboratory, switch the runtime to **A100** or **L4** (or T4), and run all cells. It will bypass Drive I/O bottlenecks by utilizing local NVMe storage and rapidly download the remaining COCO datasets natively over Google's datacenter backbone.
