@@ -11,7 +11,7 @@ import numpy as np
 
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from project.blur_augment import BlurAugment
+from blur_augment import BlurAugment
 from training.train_yolov8_cans import prepare_combined_dataset, get_project_root
 
 def benchmark_model(model_path, data_yaml, device='cpu', apply_blur=False):
@@ -37,7 +37,7 @@ def benchmark_model(model_path, data_yaml, device='cpu', apply_blur=False):
             elif "yolo26" in filename:
                 base_name = "models/yolo26n_cans.pt"
                 if not os.path.exists(base_name):
-                    base_name = "yolov8n.pt"
+                    base_name = "yolov26n.pt"
             else:
                 base_name = "models/yolov8n_cans.pt"
                 if not os.path.exists(base_name):
