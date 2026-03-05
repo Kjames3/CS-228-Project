@@ -1,0 +1,47 @@
+﻿                            
+ Usage: nlm setup add       
+ [OPTIONS] CLIENT           
+                            
+ Add NotebookLM MCP server  
+ to an AI tool.             
+                            
+ Configures the MCP server  
+ transport so the AI tool   
+ can access                 
+ NotebookLM features        
+ (notebooks, sources,       
+ audio, research, etc).     
+                            
+ Examples:                  
+     nlm setup add          
+ claude-code                
+     nlm setup add          
+ claude-desktop             
+     nlm setup add gemini   
+     nlm setup add cursor   
+     nlm setup add windsurf 
+     nlm setup add cline    
+     nlm setup add          
+ antigravity                
+     nlm setup add json     
+                            
++- Arguments --------------+
+| *    clà      TEXT  AI   |
+|                     tool |
+|                     to   |
+|                     conà |
+|                     (clà |
+|                     claà |
+|                     gemà |
+|                     curà |
+|                     winà |
+|                     [reà |
++--------------------------+
++- Options ----------------+
+| --help          Show     |
+|                 this     |
+|                 message  |
+|                 and      |
+|                 exit.    |
++--------------------------+
+

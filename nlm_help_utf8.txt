@@ -1,0 +1,29 @@
+﻿                            
+ Usage: nlm setup [OPTIONS] 
+ COMMAND [ARGS]...          
+                            
+ Configure MCP server for   
+ AI tools                   
+                            
++- Options ----------------+
+| --help          Show     |
+|                 this     |
+|                 message  |
+|                 and      |
+|                 exit.    |
++--------------------------+
++- Commands ---------------+
+| add      Add NotebookLM  |
+|          MCP server to   |
+|          an AI tool.     |
+| remove   Remove          |
+|          NotebookLM MCP  |
+|          server from an  |
+|          AI tool.        |
+| list     Show supported  |
+|          AI tools and    |
+|          their MCP       |
+|          configuration   |
+|          status.         |
++--------------------------+
+
