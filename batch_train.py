@@ -33,7 +33,7 @@ BATCH_SIZE = 8
 DATA_CONFIG = "training/datasets/combined_cans/data.yaml"
 FRACTION = 0.1  # Train on 1/3 of the dataset to speed up training
 
-def run_training_step(model_info):
+def run_training_step(model_info, cache=False):
     model_name = model_info["name"]
     model_file = model_info["file"]
     
@@ -64,7 +64,8 @@ def run_training_step(model_info):
             epochs=EPOCHS,
             batch_size=BATCH_SIZE,
             run_name=student_name,
-            fraction=FRACTION
+            fraction=FRACTION,
+            cache=cache
         )
         trainer.train()
         success = True
@@ -131,6 +132,7 @@ def run_training_step(model_info):
 def main():
     parser = argparse.ArgumentParser(description="Batch Train Student Models")
     parser.add_argument("--model", type=str, default="all", choices=["all", "yolov8", "yolov11", "yolov26"], help="Which model to train")
+    parser.add_argument("--cache", action="store_true", help="Cache dataset in RAM")
     args = parser.parse_args()
 
     selected_models = []
@@ -152,7 +154,7 @@ def main():
     results = {}
     
     for model_info in selected_models:
-        success = run_training_step(model_info)
+        success = run_training_step(model_info, cache=args.cache)
         results[model_info["name"]] = "Success" if success else "Failed"
         
         # Optional: Sleep briefly between runs to let GPU cool?

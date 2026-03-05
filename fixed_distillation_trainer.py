@@ -48,10 +48,11 @@ class SpatialAttentionLoss(nn.Module):
 class FixedDistillationTrainer:
     def __init__(self, model_name='yolov8n.pt', data_cfg='coco8.yaml', 
                  epochs=10, batch_size=4, lr=0.001, run_name='student',
-                 device=None, fraction=0.1):
+                 device=None, fraction=0.1, cache=False):
         
         self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.fraction = fraction
+        self.cache = cache
         self.run_name = run_name
         self.best_map = 0.0
         self.epochs = epochs
@@ -116,7 +117,8 @@ class FixedDistillationTrainer:
             augment=True, 
             data=dataset_info, 
             classes=dataset_info['names'],
-            fraction=self.fraction
+            fraction=self.fraction,
+            cache=self.cache
         )
         self.dataloader = build_dataloader(dataset, batch=self.batch_size, workers=0)
     def _setup_feature_extraction(self):
