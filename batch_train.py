@@ -30,6 +30,7 @@ models_to_train = [
 EPOCHS = 150
 BATCH_SIZE = 8
 DATA_CONFIG = "training/datasets/combined_cans/data.yaml"
+FRACTION = 0.1  # Train on 1/3 of the dataset to speed up training
 
 def run_training_step(model_info):
     model_name = model_info["name"]
@@ -61,7 +62,8 @@ def run_training_step(model_info):
             data_cfg=DATA_CONFIG,
             epochs=EPOCHS,
             batch_size=BATCH_SIZE,
-            run_name=student_name
+            run_name=student_name,
+            fraction=FRACTION
         )
         trainer.train()
         success = True
