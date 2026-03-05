@@ -130,7 +130,7 @@ def benchmark_model(model_path, data_yaml, device='cpu', apply_blur=False):
     print(f"  -> Latency: {metrics['Latency (ms)']:.2f} ms")
     return metrics
 
-def create_blurred_dataset(clean_yaml_path, output_dir_name="combined_cans_blurred"):
+def create_blurred_dataset(clean_yaml_path, output_dir_name="CS228_Testset_blurred"):
     """
     Creates a temporary dataset where all test images are blurred.
     """
@@ -270,9 +270,17 @@ def generate_report(df, output_path):
 
 def main():
     try:
+        # Default to the new CS228 Testset if it exists
+        default_data_path = "datasets/CS228_Testset.v1i.yolo/data.yaml"
+        
         parser = argparse.ArgumentParser()
         parser.add_argument('--models', nargs='+', required=True, help='Paths to .pt models to compare')
-        parser.add_argument('--data', type=str, required=True, help='Path to clean data.yaml')
+        
+        if os.path.exists(default_data_path):
+            parser.add_argument('--data', type=str, default=default_data_path, help='Path to clean data.yaml')
+        else:
+            parser.add_argument('--data', type=str, required=True, help='Path to clean data.yaml')
+            
         parser.add_argument('--device', type=str, default='cpu')
         args = parser.parse_args()
         # 1. Expand Directory and Glob Arguments
