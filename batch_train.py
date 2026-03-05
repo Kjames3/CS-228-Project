@@ -2,6 +2,7 @@ import time
 import sys
 import os
 import traceback
+import argparse
 from fixed_distillation_trainer import FixedDistillationTrainer
 
 # Define the models to train
@@ -128,10 +129,29 @@ def run_training_step(model_info):
         return False
 
 def main():
-    print("🚀 Starting Batch Training Sequence: v8 -> v11 -> v26")
+    parser = argparse.ArgumentParser(description="Batch Train Student Models")
+    parser.add_argument("--model", type=str, default="all", choices=["all", "yolov8", "yolov11", "yolov26"], help="Which model to train")
+    args = parser.parse_args()
+
+    selected_models = []
+    for m in models_to_train:
+        if args.model == "all":
+            selected_models.append(m)
+        elif args.model == "yolov8" and "8n" in m["name"]:
+            selected_models.append(m)
+        elif args.model == "yolov11" and "11n" in m["name"]:
+            selected_models.append(m)
+        elif args.model == "yolov26" and "26n" in m["name"]:
+            selected_models.append(m)
+
+    if not selected_models:
+        print(f"No models matched selection: {args.model}")
+        return
+
+    print(f"🚀 Starting Batch Training Sequence for: {[m['name'] for m in selected_models]}")
     results = {}
     
-    for model_info in models_to_train:
+    for model_info in selected_models:
         success = run_training_step(model_info)
         results[model_info["name"]] = "Success" if success else "Failed"
         

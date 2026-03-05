@@ -437,6 +437,7 @@ def main():
     parser.add_argument("--rebuild-dataset", action="store_true", help="Rebuild dataset")
     parser.add_argument("--dry-run", action="store_true", help="Run 1 epoch to verify setup")
     parser.add_argument("--fraction", type=float, default=0.33, help="Fraction of dataset to use for training (0.0 to 1.0)")
+    parser.add_argument("--model", type=str, default="all", choices=["all", "yolov8", "yolov11", "yolov26"], help="Which model to train")
     
     args = parser.parse_args()
     project_root = get_project_root()
@@ -468,11 +469,20 @@ def main():
         }
     ]
     
+    selected_models = []
+    for config in models_to_train:
+        if args.model == "all" or args.model in config["name"]:
+            selected_models.append(config)
+
+    if not selected_models:
+        print(f"No models matched selection: {args.model}")
+        return
+
     if args.dry_run:
         print("\n⚠ DRY RUN MODE: Training for 1 epoch only")
         args.epochs = 1
     
-    for config in models_to_train:
+    for config in selected_models:
         try:
             train_single_model(
                 config, 
