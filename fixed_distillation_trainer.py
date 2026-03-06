@@ -110,6 +110,11 @@ class FixedDistillationTrainer:
         from ultralytics.data import build_dataloader
         
         dataset_info = check_det_dataset(self.data_cfg)
+        
+        # Add cache to dataset info if enabled
+        if self.cache:
+            dataset_info['cache'] = True
+            
         dataset = YOLODataset(
             dataset_info['train'], 
             imgsz=640, 
@@ -117,9 +122,12 @@ class FixedDistillationTrainer:
             augment=True, 
             data=dataset_info, 
             classes=dataset_info['names'],
-            fraction=self.fraction,
-            cache=self.cache
+            fraction=self.fraction
         )
+        # Attempt to inject cache behavior if it exists
+        if self.cache:
+            dataset.cache = True
+            
         self.dataloader = build_dataloader(dataset, batch=self.batch_size, workers=0)
     def _setup_feature_extraction(self):
         self.feature_layer_idx = self._find_feature_layer()
