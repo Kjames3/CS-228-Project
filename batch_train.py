@@ -8,21 +8,24 @@ from fixed_distillation_trainer import FixedDistillationTrainer
 # Define the models to train
 # We prioritize using the 'cans' specific models if they exist, otherwise fallback to standard.
 # Based on user request order: v8 -> v11 -> v26
+# Define the models to train
+# We prioritize using the 'cans' specific models if they exist, otherwise fallback to standard.
+# Based on user request order: v8 -> v11 -> v26
 models_to_train = [
     {
         "name": "yolov8n_cans",
-        "file": "models/yolov8n_cans.pt",
+        "file": "models/teachers/yolov8_teacher.pt",
         "fallback": "yolov8n.pt",
         "force_rebuild": True  # Force merge of all datasets before first run
     },
     {
         "name": "yolo11n_cans",
-        "file": "models/yolo11n_cans.pt",
+        "file": "models/teachers/yolov11_teacher.pt",
         "fallback": "yolo11n.pt"
     },
     {
         "name": "yolo26n_cans",
-        "file": "models/yolo26n_cans.pt",
+        "file": "models/teachers/yolov26_teacher.pt",
         "fallback": "models/yolo26n_cans.pt" # 26n is likely custom, no standard fallback
     }
 ]
@@ -30,7 +33,28 @@ models_to_train = [
 # Training configuration
 EPOCHS = 150
 BATCH_SIZE = 8
-DATA_CONFIG = "training/datasets/combined_cans/data.yaml"
+
+# Dynamically resolve paths
+import os
+import pathlib
+
+# Since Colab places this somewhere absolute vs Windows local...
+_possible_paths = [
+    "/content/CS-228-Project/project/datasets/model_training_data/data.yaml", 
+    "/content/CS-228-Project/datasets/model_training_data/data.yaml",
+    str(pathlib.Path(__file__).resolve().parent / "datasets" / "model_training_data" / "data.yaml")
+]
+
+DATA_CONFIG = None
+for _p in _possible_paths:
+    if os.path.exists(_p):
+        DATA_CONFIG = _p
+        break
+
+if not DATA_CONFIG:
+    # Just default to relative and pray!
+    DATA_CONFIG = "datasets/model_training_data/data.yaml"
+
 FRACTION = 0.1  # Train on 1/3 of the dataset to speed up training
 
 def run_training_step(model_info, cache=False):
@@ -65,7 +89,7 @@ def run_training_step(model_info, cache=False):
             batch_size=BATCH_SIZE,
             run_name=student_name,
             fraction=FRACTION,
-            cache=cache
+            cache=True
         )
         trainer.train()
         success = True
@@ -111,7 +135,6 @@ def run_training_step(model_info, cache=False):
                 _ = eval_model(dummy_input, verbose=False)
             
             # Measure latency
-            import time
             start_infer = time.time()
             iters = 50
             for _ in range(iters):
@@ -132,29 +155,36 @@ def run_training_step(model_info, cache=False):
 def main():
     parser = argparse.ArgumentParser(description="Batch Train Student Models")
     parser.add_argument("--model", type=str, default="all", choices=["all", "yolov8", "yolov11", "yolov26"], help="Which model to train")
-    parser.add_argument("--cache", action="store_true", help="Cache dataset in RAM")
+    parser.add_argument("--teacher", type=str, default=None, help="Explicit path to a teacher model to use (only use if training a single model type).")
     args = parser.parse_args()
 
     selected_models = []
     for m in models_to_train:
+        base_model = dict(m)  # copy to avoid mutating global
+        if args.teacher:
+            base_model["file"] = args.teacher
+            
         if args.model == "all":
-            selected_models.append(m)
-        elif args.model == "yolov8" and "8n" in m["name"]:
-            selected_models.append(m)
-        elif args.model == "yolov11" and "11n" in m["name"]:
-            selected_models.append(m)
-        elif args.model == "yolov26" and "26n" in m["name"]:
-            selected_models.append(m)
+            selected_models.append(base_model)
+        elif args.model == "yolov8" and "8n" in base_model["name"]:
+            selected_models.append(base_model)
+        elif args.model == "yolov11" and "11n" in base_model["name"]:
+            selected_models.append(base_model)
+        elif args.model == "yolov26" and "26n" in base_model["name"]:
+            selected_models.append(base_model)
 
     if not selected_models:
         print(f"No models matched selection: {args.model}")
         return
 
     print(f"🚀 Starting Batch Training Sequence for: {[m['name'] for m in selected_models]}")
+    if args.teacher:
+        print(f"🧑‍🏫 Overriding teacher model to explicit path: {args.teacher}")
+        
     results = {}
     
     for model_info in selected_models:
-        success = run_training_step(model_info, cache=args.cache)
+        success = run_training_step(model_info)
         results[model_info["name"]] = "Success" if success else "Failed"
         
         # Optional: Sleep briefly between runs to let GPU cool?
