@@ -46,7 +46,7 @@ class SpatialAttentionLoss(nn.Module):
         return F.mse_loss(student_attention, teacher_attention.detach())
 
 class FixedDistillationTrainer:
-    def __init__(self, model_name='yolov8n.pt', data_cfg='coco8.yaml', 
+    def __init__(self, teacher_name='models/yolov8n_cans.pt', student_name='yolov8n.pt', data_cfg='coco8.yaml', 
                  epochs=10, batch_size=4, lr=0.001, run_name='student',
                  device=None, fraction=0.1, cache=False):
         
@@ -68,7 +68,7 @@ class FixedDistillationTrainer:
             f.write("epoch,det_loss,distill_loss,total_loss,val_map50\n")
         
         # Initialize models
-        self._init_models(model_name)
+        self._init_models(teacher_name, student_name)
         
         # Loss functions - Issue C Fix (Spatial Attention Transfer)
         self.distill_loss_fn = SpatialAttentionLoss(normalize=True)
@@ -77,31 +77,57 @@ class FixedDistillationTrainer:
         from blur_augment import BatchedBlurAugment
         self.blur_augment = BatchedBlurAugment(blur_prob=0.8, device=self.device)
         
-        # Optimizer
-        self.optimizer = optim.AdamW(self.student_model.parameters(), lr=lr, weight_decay=0.001)
-        self.scheduler = optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=epochs)
+        # Optimizer - use lower LR to prevent weight collapse within first epoch
+        # A fresh student starting from yolov8n.pt weights can overfit in one pass at lr=0.001
+        self.optimizer = optim.AdamW(self.student_model.parameters(), lr=lr, weight_decay=0.005)
+        # OneCycleLR: starts at lr/25, ramps up to lr over first 30% epochs, then cosine decays
+        # This prevents the catastrophic det_loss→0 collapse we observed.
+        # We estimate steps_per_epoch from fraction of COCO (~11829 images)
+        # actual steps will be computed lazily once dataloader is ready
+        self._lr_max = lr
+        self.scheduler = None  # Will be initialized lazily in first training step
         
         # Data loader initialization
         self._init_dataloader()
 
-    def _init_models(self, model_name):
-        # Teacher (frozen)
-        self.teacher = YOLO(model_name)
+    def _init_models(self, teacher_name, student_name):
+        # Teacher (frozen) -> E.g., 'models/teachers/yolov11_teacher.pt'
+        self.teacher = YOLO(teacher_name)
         self.teacher_model = self.teacher.model.to(self.device)
         self.teacher_model.eval()
         for param in self.teacher_model.parameters():
             param.requires_grad = False
             
-        # Student (trainable)
-        self.student = YOLO(model_name)
+        # Student (trainable) -> E.g., 'yolo11n.pt'
+        self.student = YOLO(student_name)
         self.student_model = self.student.model.to(self.device)
         self.student_model.train()
+        for param in self.student_model.parameters():
+            param.requires_grad = True
         
         # Issue A Fix: Dynamic Feature Layer Detection
         self._setup_feature_extraction()
         
         # Critical Fix: Initialize Detection Loss properly
-        self._setup_detection_loss()
+        # The Ultralytics DetectionModel needs args injected since we bypassed standard trainer
+        from copy import deepcopy
+        
+        # Populate model.args so loss compute can read hyp configurations dynamically
+        args_dict = getattr(self.student_model, 'args', None)
+        if args_dict is None or isinstance(args_dict, dict):
+            class ArgsWrapper:
+                def __init__(self, d, device_str):
+                    self.box = 7.5
+                    self.cls = 0.5
+                    self.dfl = 1.5
+                    self.fl_gamma = 0.0
+                    self.label_smoothing = 0.0
+                    self.device = device_str
+                    if d:
+                        for k, v in d.items():
+                            setattr(self, k, v)
+                            
+            self.student_model.args = ArgsWrapper(args_dict if isinstance(args_dict, dict) else {}, str(self.device))
         
     def _init_dataloader(self):
         """Initialize dataloader using Ultralytics utilities"""
@@ -113,7 +139,7 @@ class FixedDistillationTrainer:
         
         # Add cache to dataset info if enabled
         if self.cache:
-            dataset_info['cache'] = True
+            dataset_info['cache'] = 'ram' # User confirmed 60GB RAM availability on Colab Pro
             
         dataset = YOLODataset(
             dataset_info['train'], 
@@ -126,9 +152,9 @@ class FixedDistillationTrainer:
         )
         # Attempt to inject cache behavior if it exists
         if self.cache:
-            dataset.cache = True
+            dataset.cache = 'ram'
             
-        self.dataloader = build_dataloader(dataset, batch=self.batch_size, workers=0)
+        self.dataloader = build_dataloader(dataset, batch=self.batch_size, workers=4)
     def _setup_feature_extraction(self):
         self.feature_layer_idx = self._find_feature_layer()
         print(f"Feature extraction layer index: {self.feature_layer_idx}")
@@ -181,9 +207,10 @@ class FixedDistillationTrainer:
         return len(children) // 2
 
     def _setup_detection_loss(self):
-        from ultralytics.utils.loss import v8DetectionLoss
-        self.student.overrides['task'] = 'detect'
-        self.criterion = v8DetectionLoss(self.student_model)
+        # We no longer manually instantiate v8DetectionLoss
+        # Ultralytics DetectionModel calculates it automatically
+        # when a dictionary is passed to its forward pass!
+        pass
 
     def _apply_blur(self, images):
         """Batched GPU blur augmentation"""
@@ -191,6 +218,19 @@ class FixedDistillationTrainer:
 
     def train(self):
         print(colorstr("blue", "bold", "Starting Fixed Distillation Training..."))
+        
+        # Initialize OneCycleLR lazily now that we know steps_per_epoch
+        steps_per_epoch = len(self.dataloader)
+        total_steps = self.epochs * steps_per_epoch
+        self.scheduler = optim.lr_scheduler.OneCycleLR(
+            self.optimizer,
+            max_lr=self._lr_max,
+            total_steps=total_steps,
+            pct_start=0.1,        # 10% of training is warmup
+            anneal_strategy='cos',
+            div_factor=25.0,      # start_lr = max_lr / 25
+            final_div_factor=1e4  # end_lr = max_lr / (25 * 1e4)
+        )
         
         for epoch in range(self.epochs):
             self.student_model.train()
@@ -205,37 +245,49 @@ class FixedDistillationTrainer:
                 self.feature_storage['teacher'] = None
                 self.feature_storage['student'] = None
                 
-                # Forward pass
+                # Teacher forward (frozen)
                 with torch.no_grad():
                     _ = self.teacher_model(batch['img'].float() / 255.0)
                 teacher_feat = self.feature_storage['teacher']
                 
                 # Student forward (with blur)
                 blurred_images = self._apply_blur(batch['img'].float() / 255.0)
-                preds = self.student_model(blurred_images)
+                
+                # Pass full batch dict to get native Ultralytics loss
+                batch['img'] = blurred_images
+                
+                with torch.set_grad_enabled(True):
+                    det_loss, loss_items = self.student_model(batch)
+                
                 student_feat = self.feature_storage['student']
                 
-                # Compute detection loss
-                det_loss, loss_items = self.criterion(preds, batch)
+                # Reduce to scalar, normalize by batch size
+                if isinstance(det_loss, (tuple, list)):
+                    det_loss = sum(det_loss)
+                det_loss = det_loss.sum() / batch['img'].shape[0]
                 
-                # Dynamic Temperature Scaling: decrease temperature as epochs progress
-                # Starts at 4.0, ends at 1.0
+                # Dynamic Temperature Scaling
                 current_temp = 4.0 - 3.0 * (epoch / max(1, self.epochs - 1))
                 
-                # Compute distillation loss
+                # Distillation loss
                 distill_loss = self.distill_loss_fn(student_feat, teacher_feat, temperature=current_temp)
+                distill_loss = distill_loss.sum()
                 
                 # Total loss
                 loss = distill_loss + det_loss
                 
                 self.optimizer.zero_grad()
                 loss.backward()
+                
+                # Clip gradients to prevent explosions
+                torch.nn.utils.clip_grad_norm_(self.student_model.parameters(), max_norm=10.0)
+                
                 self.optimizer.step()
+                self.scheduler.step()  # Per-batch stepping for OneCycleLR
                 
                 epoch_distill_loss += distill_loss.item()
                 epoch_det_loss += det_loss.item()
                 num_batches += 1
             
-            print(f"Epoch {epoch+1}/{self.epochs} | Det Loss: {epoch_det_loss/num_batches:.4f} | Distill Loss: {epoch_distill_loss/num_batches:.4f}")
-            self.scheduler.step()
-
+            current_lr = self.optimizer.param_groups[0]['lr']
+            print(f"Epoch {epoch+1}/{self.epochs} | Det Loss: {epoch_det_loss/num_batches:.4f} | Distill Loss: {epoch_distill_loss/num_batches:.4f} | LR: {current_lr:.6f}")

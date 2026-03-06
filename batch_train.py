@@ -14,19 +14,19 @@ from fixed_distillation_trainer import FixedDistillationTrainer
 models_to_train = [
     {
         "name": "yolov8n_cans",
-        "file": "models/teachers/yolov8_teacher.pt",
+        "file": "project/models/teachers/yolov8_teacher.pt",
         "fallback": "yolov8n.pt",
         "force_rebuild": True  # Force merge of all datasets before first run
     },
     {
         "name": "yolo11n_cans",
-        "file": "models/teachers/yolov11_teacher.pt",
+        "file": "project/models/teachers/yolov11_teacher.pt",
         "fallback": "yolo11n.pt"
     },
     {
         "name": "yolo26n_cans",
-        "file": "models/teachers/yolov26_teacher.pt",
-        "fallback": "models/yolo26n_cans.pt" # 26n is likely custom, no standard fallback
+        "file": "project/models/teachers/yolov26_teacher.pt",
+        "fallback": "yolo26n.pt" # Fresh blank student architecture (distilled from scratch)
     }
 ]
 
@@ -42,6 +42,7 @@ import pathlib
 _possible_paths = [
     "/content/CS-228-Project/project/datasets/model_training_data/data.yaml", 
     "/content/CS-228-Project/datasets/model_training_data/data.yaml",
+    "/content/drive/MyDrive/CS-228_Project/project/datasets/model_training_data/data.yaml",
     str(pathlib.Path(__file__).resolve().parent / "datasets" / "model_training_data" / "data.yaml")
 ]
 
@@ -82,8 +83,16 @@ def run_training_step(model_info, cache=False):
     start_t = time.time()
     try:
         # Initialize and run via Python instead of subprocess to avoid command injection
+        # According to the project proposal, Teacher Models (finetuned on Cans with Blur) 
+        # should distill their knowledge down to Nano Student Models (default untrained architectures)
+        
+        # We determine the raw student arch from the fallback configuration
+        # For example: yolov8n.pt, yolo11n.pt, or yolo26n.pt depending on the teacher's structure
+        target_student_architecture = model_info["fallback"]
+        
         trainer = FixedDistillationTrainer(
-            model_name=model_file,
+            teacher_name=model_file,
+            student_name=target_student_architecture,
             data_cfg=DATA_CONFIG,
             epochs=EPOCHS,
             batch_size=BATCH_SIZE,
