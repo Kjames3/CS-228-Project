@@ -8,6 +8,7 @@ import os
 import copy
 from torch.utils.data import DataLoader
 from ultralytics.data import build_dataloader, build_yolo_dataset
+from tqdm import tqdm
 
 class SpatialAttentionLoss(nn.Module):
     """
@@ -238,7 +239,11 @@ class FixedDistillationTrainer:
             epoch_distill_loss = 0
             num_batches = 0
             
-            for batch_idx, batch in enumerate(self.dataloader):
+            pbar = tqdm(enumerate(self.dataloader), total=steps_per_epoch,
+                        desc=f"Epoch {epoch+1}/{self.epochs}", unit="batch",
+                        bar_format='{l_bar}{bar:30}{r_bar}')
+            
+            for batch_idx, batch in pbar:
                 # Move batch to device for v8DetectionLoss
                 batch = {k: v.to(self.device).float() if isinstance(v, torch.Tensor) and v.dtype == torch.float64 else v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
                 
@@ -288,6 +293,16 @@ class FixedDistillationTrainer:
                 epoch_distill_loss += distill_loss.item()
                 epoch_det_loss += det_loss.item()
                 num_batches += 1
+                
+                # Update progress bar with running averages
+                avg_det = epoch_det_loss / num_batches
+                avg_dist = epoch_distill_loss / num_batches
+                current_lr = self.optimizer.param_groups[0]['lr']
+                pbar.set_postfix({
+                    'det': f'{avg_det:.4f}',
+                    'dist': f'{avg_dist:.4f}',
+                    'lr': f'{current_lr:.6f}'
+                })
             
             current_lr = self.optimizer.param_groups[0]['lr']
             print(f"Epoch {epoch+1}/{self.epochs} | Det Loss: {epoch_det_loss/num_batches:.4f} | Distill Loss: {epoch_distill_loss/num_batches:.4f} | LR: {current_lr:.6f}")
