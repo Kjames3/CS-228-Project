@@ -1,19 +1,16 @@
-# Datasets
-dataset/
-datasets/
+# Ignore heavy model weights
+*.pt
+*.pth
 
-# Documents (excluded for now)
-documents/
+# Ignore training output folders
+runs/
+project/model_comparison_results.csv
+project/*.html
 
-# Python
+# Ignore OS-specific files
+.DS_Store
+Thumbs.db
+
+# Ignore Python cache
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
-.env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
+*.pyc
