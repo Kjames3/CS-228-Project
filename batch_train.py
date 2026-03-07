@@ -58,7 +58,7 @@ if not DATA_CONFIG:
 
 FRACTION = 0.1  # Train on 1/3 of the dataset to speed up training
 
-def run_training_step(model_info, cache=False):
+def run_training_step(model_info, batch_size=BATCH_SIZE, cache=False):
     model_name = model_info["name"]
     model_file = model_info["file"]
     
@@ -95,7 +95,7 @@ def run_training_step(model_info, cache=False):
             student_name=target_student_architecture,
             data_cfg=DATA_CONFIG,
             epochs=EPOCHS,
-            batch_size=BATCH_SIZE,
+            batch_size=batch_size,
             run_name=student_name,
             fraction=FRACTION,
             cache=True
@@ -165,6 +165,7 @@ def main():
     parser = argparse.ArgumentParser(description="Batch Train Student Models")
     parser.add_argument("--model", type=str, default="all", choices=["all", "yolov8", "yolov11", "yolov26"], help="Which model to train")
     parser.add_argument("--teacher", type=str, default=None, help="Explicit path to a teacher model to use (only use if training a single model type).")
+    parser.add_argument("--batch-size", type=int, default=BATCH_SIZE, help=f"Batch size for training (default: {BATCH_SIZE}). Increase if you have more GPU memory.")
     args = parser.parse_args()
 
     selected_models = []
@@ -193,7 +194,7 @@ def main():
     results = {}
     
     for model_info in selected_models:
-        success = run_training_step(model_info)
+        success = run_training_step(model_info, batch_size=args.batch_size)
         results[model_info["name"]] = "Success" if success else "Failed"
         
         # Optional: Sleep briefly between runs to let GPU cool?
