@@ -38,23 +38,36 @@ BATCH_SIZE = 8
 import os
 import pathlib
 
-# Since Colab places this somewhere absolute vs Windows local...
+# Since Colab clones the repo with either a hyphen (CS-228-Project) 
+# or underscore (CS228_Project) variant depending on how the notebook is set up,
+# we check all common placements, order matters (first match wins).
 _possible_paths = [
-    "/content/CS-228-Project/project/datasets/model_training_data/data.yaml", 
+    # Hyphen variant (default: git clone url)
+    "/content/CS-228-Project/project/datasets/model_training_data/data.yaml",
     "/content/CS-228-Project/datasets/model_training_data/data.yaml",
-    "/content/drive/MyDrive/CS-228_Project/project/datasets/model_training_data/data.yaml",
-    str(pathlib.Path(__file__).resolve().parent / "datasets" / "model_training_data" / "data.yaml")
+    # Underscore variant (some teammates clone differently)
+    "/content/CS228_Project/project/datasets/model_training_data/data.yaml",
+    "/content/CS228_Project/datasets/model_training_data/data.yaml",
+    # Drive mounts
+    "/content/drive/MyDrive/CS-228-Project/project/datasets/model_training_data/data.yaml",
+    "/content/drive/MyDrive/CS228_Project/project/datasets/model_training_data/data.yaml",
+    # Relative to this script file (works locally and in any Colab structure)
+    str(pathlib.Path(__file__).resolve().parent / "datasets" / "model_training_data" / "data.yaml"),
+    str(pathlib.Path(__file__).resolve().parent.parent / "datasets" / "model_training_data" / "data.yaml"),
 ]
 
 DATA_CONFIG = None
 for _p in _possible_paths:
     if os.path.exists(_p):
         DATA_CONFIG = _p
+        print(f"✅ Dataset config found: {DATA_CONFIG}")
         break
 
 if not DATA_CONFIG:
-    # Just default to relative and pray!
+    # Last resort: relative path (will error clearly if dataset isn't built)
     DATA_CONFIG = "datasets/model_training_data/data.yaml"
+    print(f"⚠️  Could not auto-locate data.yaml. Defaulting to: {DATA_CONFIG}")
+    print("   If this fails, run the dataset build step first (Cell 4 in the notebook).")
 
 FRACTION = 0.1  # Train on 1/3 of the dataset to speed up training
 
