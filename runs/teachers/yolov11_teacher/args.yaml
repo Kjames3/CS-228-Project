@@ -1,18 +1,18 @@
 task: detect
 mode: train
 model: yolo11n.pt
-data: C:\Users\besto\OneDrive\Documents\Viam Rover 2 projects\CS-228-Project\datasets\model_training_data\data.yaml
+data: /content/datasets/model_training_data/data.yaml
 epochs: 150
 time: null
 patience: 50
-batch: 16
+batch: 128
 imgsz: 640
 save: true
 save_period: -1
 cache: false
 device: '0'
 workers: 8
-project: C:\Users\besto\OneDrive\Documents\Viam Rover 2 projects\CS-228-Project\runs\teachers
+project: /content/runs/teachers
 name: yolov11_teacher
 exist_ok: true
 pretrained: true
@@ -26,7 +26,7 @@ cos_lr: false
 close_mosaic: 10
 resume: false
 amp: true
-fraction: 1.0
+fraction: 0.1
 profile: false
 freeze: null
 multi_scale: 0.0
@@ -106,4 +106,4 @@ auto_augment: randaugment
 erasing: 0.4
 cfg: null
 tracker: botsort.yaml
-save_dir: C:\Users\besto\OneDrive\Documents\Viam Rover 2 projects\CS-228-Project\runs\teachers\yolov11_teacher
+save_dir: /content/runs/teachers/yolov11_teacher
