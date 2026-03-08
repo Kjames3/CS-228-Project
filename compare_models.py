@@ -14,7 +14,111 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from blur_augment import BlurAugment
 from training.train_yolov8_cans import prepare_combined_dataset, get_project_root
 
-def benchmark_model(model_path, data_yaml, device='cpu', apply_blur=False):
+def _remap_test_labels_for_model(src_yaml: str, model_nc: int) -> tuple:
+    """
+    Creates a temporary evaluation dataset whose ground-truth class IDs match
+    the class schema used when the model was trained.
+
+    Returns: (eval_yaml_path: str, extra_val_kwargs: dict)
+
+    Supported cases
+    ---------------
+    nc == 3   -> test set already uses 3-class labels; no remapping needed.
+    nc == 81  -> teacher trained with COCO(80) + can(80). Testset classes
+                 0=bottle→39, 1=can→80, 2=cup→41.
+                 val kwargs: classes=[39,80,41] (only those 3 are evaluated).
+    nc == 1   -> single-class model; remap all testset classes to 0.
+    other     -> fall back to single_cls=True so at least bbox overlap is scored.
+    """
+    import yaml, shutil, tempfile
+
+    src_yaml = Path(src_yaml)
+    with open(src_yaml, 'r') as f:
+        data = yaml.safe_load(f)
+
+    # Resolve test images path — always relative to yaml file, handles '../test/images' correctly
+    rel_test = data.get('test', 'test/images')
+    rel_test_p = Path(rel_test)
+    if rel_test_p.is_absolute():
+        test_imgs = rel_test_p.resolve()
+    else:
+        test_imgs = (src_yaml.parent / rel_test).resolve()
+
+    # Labels: Ultralytics convention = replace 'images' segment with 'labels'
+    test_lbls = Path(str(test_imgs).replace(os.sep + 'images', os.sep + 'labels'))
+    if not test_lbls.exists():
+        test_lbls = test_imgs.parent / 'labels'
+
+    if not test_imgs.exists():
+        print(f"  -> Warning: test images not found at {test_imgs}, skipping remap")
+        return str(src_yaml), {}
+
+    # ---- Passthrough for matching nc ----
+    if model_nc == 3:
+        return str(src_yaml), {}
+
+    # ---- Build class remapping table ----
+    if model_nc == 81:
+        # testset: 0=bottle, 1=can, 2=cup
+        # COCO+custom: bottle=39, can=80, cup=41
+        class_map  = {0: 39, 1: 80, 2: 41}
+        nc_out     = 81
+        names_out  = [str(i) for i in range(80)] + ['can']  # minimal names list
+        extra_val  = {'classes': [39, 80, 41]}
+    elif model_nc == 1:
+        class_map  = {i: 0 for i in range(10)}
+        nc_out     = 1
+        names_out  = ['object']
+        extra_val  = {}
+    else:
+        # Unknown schema – evaluate purely on box overlap
+        return str(src_yaml), {'single_cls': True}
+
+    # ---- Copy images + remapped labels to a temp dir ----
+    tmp = Path(tempfile.mkdtemp(prefix=f'yolo_remap_nc{model_nc}_'))
+    tmp_imgs = tmp / 'test' / 'images'
+    tmp_lbls = tmp / 'test' / 'labels'
+    tmp_imgs.mkdir(parents=True)
+    tmp_lbls.mkdir(parents=True)
+
+    # Copy images
+    for img in test_imgs.glob('*'):
+        if img.suffix.lower() in ('.jpg', '.jpeg', '.png', '.bmp', '.webp'):
+            shutil.copy2(img, tmp_imgs / img.name)
+
+    # Write remapped labels
+    if test_lbls.exists():
+        for lbl in test_lbls.glob('*.txt'):
+            out_lines = []
+            with open(lbl) as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if len(parts) >= 5:
+                        orig_cls = int(parts[0])
+                        new_cls  = class_map.get(orig_cls, orig_cls)
+                        out_lines.append(f"{new_cls} {' '.join(parts[1:])}\n")
+            with open(tmp_lbls / lbl.name, 'w') as f:
+                f.writelines(out_lines)
+
+    # Write new data.yaml
+    # Use forward slashes (as_posix) — Windows backslashes break YAML parsing in Ultralytics
+    new_yaml_data = {
+        'path': tmp.as_posix(),
+        'train': tmp_imgs.as_posix(),   # absolute path avoids joining issues on Windows
+        'val':   tmp_imgs.as_posix(),   # dummy
+        'test':  tmp_imgs.as_posix(),   # absolute path to copied test images
+        'nc':    nc_out,
+        'names': names_out,
+    }
+    new_yaml_path = tmp / 'data_remapped.yaml'
+    with open(new_yaml_path, 'w') as f:
+        yaml.dump(new_yaml_data, f)
+
+    print(f"  -> Created remapped eval dataset for nc={model_nc} at {tmp}")
+    return str(new_yaml_path), extra_val
+
+
+def benchmark_model(model_path, data_yaml, device='cpu', apply_blur=False, label_override=None):
     """
     Evaluates a model on the test set defined in data_yaml.
     Calculates mAP, Precision, Recall, and Inference Latency.
@@ -74,47 +178,46 @@ def benchmark_model(model_path, data_yaml, device='cpu', apply_blur=False):
     end_time = time.perf_counter()
     latency_ms = ((end_time - start_time) / 50) * 1000
 
+    # ---- Detect model class count and build the right eval yaml ----
+    model_nc = None
+    try:
+        model_nc = int(model.model.nc)
+        print(f"  -> Detected model nc={model_nc}")
+    except Exception:
+        print("  -> Could not detect model nc; using single_cls fallback")
+
+    eval_yaml, extra_val_kwargs = _remap_test_labels_for_model(data_yaml, model_nc)
+
     # Validation Arguments
     val_args = {
-        'data': data_yaml,
+        'data': eval_yaml,
         'split': 'test',
         'verbose': False,
         'device': device,
-        'plots': False
+        'plots': False,
+        **extra_val_kwargs,
     }
-
-    # If blur is requested, we need a way to inject it. 
-    # Since Ultralytics .val() uses internal dataloaders, injecting blur ON THE FLY is hard without modifying source.
-    # WORKAROUND: We will assume the unseen 'test' set is clean for the "Clean" benchmark.
-    # For "Blurred" benchmark, we will use the 'project/blur_augment.py' logic but practically,
-    # re-generating a "blurred_test" folder is the most reliable way compatible with .val().
-    
-    if apply_blur:
-        print("Creating temporary blurred test set...")
-        # (Logic to be implemented in main to avoid re-doing it per model)
-        # Assuming args.data now points to the BLURRED yaml
-        pass
 
     results = model.val(**val_args)
     
-    model_name_clean = Path(model_path).stem
-    
-    # Improve readability dynamically instead of hardcoded strings
-    import re
-    if "student" in model_name_clean:
-         # Match pattern student_yolovXn_... -> Student vX (Best)
-         match = re.search(r'yolo[v]?(\d+)', model_name_clean.lower())
-         if match:
-             model_name_clean = f"Student v{match.group(1)} (Best)"
-         else:
-             model_name_clean = "Student (Best)"
-    elif "cans" in model_name_clean:
-         # Match pattern yolo[v]Xn_cans -> vX (Cans)
-         match = re.search(r'yolo[v]?(\d+)', model_name_clean.lower())
-         if match:
-             model_name_clean = f"v{match.group(1)} (Cans)"
-         else:
-             model_name_clean = "Teacher (Cans)"
+    # Use the caller-supplied label if available, otherwise derive from filename
+    if label_override:
+        model_name_clean = label_override
+    else:
+        model_name_clean = Path(model_path).stem
+        import re
+        if "student" in model_name_clean:
+             match = re.search(r'yolo[v]?(\d+)', model_name_clean.lower())
+             if match:
+                 model_name_clean = f"Student v{match.group(1)} (Best)"
+             else:
+                 model_name_clean = "Student (Best)"
+        elif "cans" in model_name_clean:
+             match = re.search(r'yolo[v]?(\d+)', model_name_clean.lower())
+             if match:
+                 model_name_clean = f"v{match.group(1)} (Cans)"
+             else:
+                 model_name_clean = "Teacher (Cans)"
 
     metrics = {
         'Model': model_name_clean,
@@ -268,13 +371,44 @@ def generate_report(df, output_path):
         print(f"Error generating dashboard: {e}")
         return False
 
+def _derive_label(pt_path: Path, search_root: Path) -> str:
+    """
+    Derives a human-readable label from a best.pt path inside colab_results.
+    e.g.  colab_results/detect/yolov11/weights/best.pt  ->  yolov11_student
+          colab_results/teacher/yolov26/weights/best.pt  ->  yolov26_teacher
+    Falls back to the stem of the filename if the pattern is unrecognised.
+    """
+    import re
+    try:
+        rel = pt_path.relative_to(search_root)          # detect/yolov11/weights/best.pt
+        parts = rel.parts                                # ('detect','yolov11','weights','best.pt')
+        role_part  = parts[0].lower() if len(parts) > 0 else ""
+        ver_part   = parts[1].lower() if len(parts) > 1 else ""
+
+        # Determine role
+        if "teacher" in role_part:
+            role = "teacher"
+        elif role_part in ("detect", "student"):
+            role = "student"
+        else:
+            role = role_part
+
+        # Normalise version string: yolov11 / yolo26 / yolov8 etc.
+        m = re.search(r'v?(\d+)', ver_part)
+        version = f"v{m.group(1)}" if m else ver_part
+
+        return f"yolo{version}_{role}"
+    except ValueError:
+        return pt_path.stem
+
+
 def main():
     try:
         # Default to the new CS228 Testset if it exists
         default_data_path = "datasets/CS228_Testset.v1i.yolo/data.yaml"
         
         parser = argparse.ArgumentParser()
-        parser.add_argument('--models', nargs='+', required=True, help='Paths to .pt models to compare')
+        parser.add_argument('--models', nargs='+', required=True, help='Paths to .pt models / dirs to compare')
         
         if os.path.exists(default_data_path):
             parser.add_argument('--data', type=str, default=default_data_path, help='Path to clean data.yaml')
@@ -283,42 +417,53 @@ def main():
             
         parser.add_argument('--device', type=str, default='cpu')
         args = parser.parse_args()
+
         # 1. Expand Directory and Glob Arguments
-        model_paths = []
+        #    model_entries: list of (absolute_path_str, label_str)
+        model_entries = []   # [(path, label), ...]
+
+        import glob as _glob
         for path_str in args.models:
             # Handle glob patterns (e.g. project/*_best.pt)
             if "*" in path_str:
-                import glob
-                matched = glob.glob(path_str)
+                matched = sorted(_glob.glob(path_str))
                 if not matched:
                     print(f"Warning: No files matched pattern '{path_str}'")
                 else:
-                    sorted_matched = sorted(matched)
-                    model_paths.extend(sorted_matched)
+                    for m in matched:
+                        model_entries.append((m, Path(m).stem))
                 continue
 
             p = Path(path_str)
             if p.is_dir():
-                # Find all .pt files in the directory
-                found_models = list(p.glob("*.pt"))
-                if not found_models:
-                    print(f"Warning: No .pt files found in directory '{path_str}'")
+                # Recursively find every best.pt (preferred) then any .pt
+                best_pts = sorted(p.rglob("best.pt"))
+                if best_pts:
+                    for bp in best_pts:
+                        label = _derive_label(bp, p)
+                        model_entries.append((str(bp), label))
                 else:
-                    # Sort for consistency
-                    found_models.sort()
-                    model_paths.extend([str(m) for m in found_models])
+                    # Fall back to any .pt in immediate dir
+                    found = sorted(p.glob("*.pt"))
+                    if not found:
+                        print(f"Warning: No .pt files found in directory '{path_str}'")
+                    else:
+                        for f in found:
+                            model_entries.append((str(f), f.stem))
             else:
-                model_paths.append(str(p))
-        
-        args.models = model_paths
-        
-        if not args.models:
+                model_entries.append((str(p), p.stem))
+
+        if not model_entries:
             print("Error: No models found to benchmark.")
             return
 
+        # Keep backward-compat: args.models = list of paths
+        args.models = [e[0] for e in model_entries]
+        label_map   = {e[0]: e[1] for e in model_entries}
+
         print(f"\nModels selected for benchmarking ({len(args.models)}):")
-        for m in args.models:
-            print(f" - {m}")
+        for m, lbl in model_entries:
+            print(f" - {lbl}  ({m})")
 
         # 2. Setup Data
         print("Step 1: Preparing Datasets...", flush=True)
@@ -336,12 +481,13 @@ def main():
         # 3. Benchmark Loop
         print("\nStep 2: Running Benchmarks...", flush=True)
         for model_path in args.models:
+            lbl = label_map[model_path]
             # Test on Clean
-            res_clean = benchmark_model(model_path, clean_yaml, args.device, apply_blur=False)
+            res_clean = benchmark_model(model_path, clean_yaml, args.device, apply_blur=False, label_override=lbl)
             if res_clean: results_list.append(res_clean)
             
             # Test on Blur
-            res_blur = benchmark_model(model_path, blurred_yaml, args.device, apply_blur=True)
+            res_blur = benchmark_model(model_path, blurred_yaml, args.device, apply_blur=True, label_override=lbl)
             if res_blur: results_list.append(res_blur)
 
         # 4. Report
