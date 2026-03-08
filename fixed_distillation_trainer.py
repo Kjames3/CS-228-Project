@@ -229,12 +229,16 @@ class FixedDistillationTrainer:
             verbose=True,
         )
         
-        # Copy best model to expected output path
-        best_src = f"project/{self.run_name}/weights/best.pt"
+        # Copy best model to a top-level shortcut path for easy access
+        # Ultralytics saves to: runs/detect/{project}/{name}/weights/best.pt
+        best_src = f"runs/detect/project/{self.run_name}/weights/best.pt"
         best_dst = f"project/{self.run_name}_best.pt"
         if os.path.exists(best_src):
             import shutil
             shutil.copy2(best_src, best_dst)
-            print(f"\n✅ Best model copied to: {best_dst}")
+            print(f"\n✅ Best model copied to shortcut path: {best_dst}")
+        else:
+            print(f"\n⚠️  best.pt not found at: {best_src}")
+            print(f"   Check manually under: runs/detect/project/{self.run_name}/weights/")
         
         return results

@@ -115,6 +115,7 @@ def prepare_combined_dataset(project_root: Path, force_rebuild: bool = False, in
         "combined_cans",
         "combined_cans_blurred", 
         "model_training_data", 
+        "CS228_Testset.v1i.yolo",
         "__pycache__"
     }
     
@@ -411,7 +412,7 @@ def train_single_model(
         save=True,
         plots=True,
         fraction=fraction,
-        cache=cache
+        cache=True
     )
     
     # Save final teacher model to models/teachers/ for easy access
@@ -440,7 +441,6 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Run 1 epoch to verify setup")
     parser.add_argument("--fraction", type=float, default=0.33, help="Fraction of dataset to use for training (0.0 to 1.0)")
     parser.add_argument("--model", type=str, default="all", choices=["all", "yolov8", "yolov11", "yolov26"], help="Which model to train")
-    parser.add_argument("--cache", action="store_true", help="Cache images in RAM for faster training")
     
     args = parser.parse_args()
     project_root = get_project_root()
@@ -495,8 +495,7 @@ def main():
                 img_size=args.imgsz,
                 device=args.device,
                 project_root=project_root,
-                fraction=args.fraction,
-                cache=args.cache
+                fraction=args.fraction
             )
         except Exception as e:
             print(f"❌ Failed to train {config['name']}: {e}")
