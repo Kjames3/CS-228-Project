@@ -7,6 +7,9 @@ runs/
 project/model_comparison_results.csv
 project/*.html
 
+.claude/
+CLAUDE.md
+
 # Ignore OS-specific files
 .DS_Store
 Thumbs.db
